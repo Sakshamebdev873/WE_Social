@@ -2,13 +2,15 @@ import React, { useEffect } from 'react';
 import { View, Text, FlatList, Pressable, StyleSheet } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
 import { ModuleSwitcher } from '@core/ui/ModuleSwitcher';
+import { SkeletonList } from '@core/ui/Skeleton';
+import { EmptyState } from '@core/ui/EmptyState';
 import { useCareProviders } from '@modules/care/hooks/useCareProviders';
 import { useCareStore } from '@modules/care/store/careStore';
 import { useSession } from '@core/session/SessionProvider';
 import { parseCareSuggestionParams } from '@core/crossModule/bookingBridge';
 
 export default function CareHome() {
-  const { data: providers, isLoading } = useCareProviders();
+  const { data: providers, isLoading, refetch } = useCareProviders();
   const { prefilledWindow, setPrefilledWindow } = useCareStore();
   const rawParams = useLocalSearchParams<Record<string, string>>();
   const { jwt } = useSession();
@@ -42,26 +44,37 @@ export default function CareHome() {
         </View>
       )}
 
-      {isLoading && <Text style={styles.muted}>Loading providers…</Text>}
-
       {jwt?.user.role === 'host' && (
         <Pressable style={styles.hostButton} onPress={() => router.push('/(care)/host/new-listing')}>
           <Text style={styles.hostButtonText}>+ Create Care listing (Host)</Text>
         </Pressable>
       )}
 
-      <FlatList
-        data={providers ?? []}
-        keyExtractor={(item) => item.id}
-        contentContainerStyle={{ gap: 10, padding: 16 }}
-        renderItem={({ item }) => (
-          <Pressable style={styles.card} onPress={() => router.push(`/(care)/provider/${item.id}`)}>
-            <Text style={styles.cardTitle}>{item.displayName}</Text>
-            <Text style={styles.cardMeta}>{item.service} · ${item.hourlyRate}/hr</Text>
-            <Text style={styles.cardHint}>Exact location hidden until booking is confirmed</Text>
-          </Pressable>
-        )}
-      />
+      {isLoading && <SkeletonList rows={3} />}
+
+      {!isLoading && (providers ?? []).length === 0 && (
+        <EmptyState
+          title="No care providers nearby"
+          body="Try widening your search area, or refresh to check again."
+          actionLabel="Refresh"
+          onAction={() => void refetch()}
+        />
+      )}
+
+      {!isLoading && (providers ?? []).length > 0 && (
+        <FlatList
+          data={providers ?? []}
+          keyExtractor={(item) => item.id}
+          contentContainerStyle={{ gap: 10, padding: 16 }}
+          renderItem={({ item }) => (
+            <Pressable style={styles.card} onPress={() => router.push(`/(care)/provider/${item.id}`)}>
+              <Text style={styles.cardTitle}>{item.displayName}</Text>
+              <Text style={styles.cardMeta}>{item.service} · ${item.hourlyRate}/hr</Text>
+              <Text style={styles.cardHint}>Exact location hidden until booking is confirmed</Text>
+            </Pressable>
+          )}
+        />
+      )}
     </View>
   );
 }
@@ -69,7 +82,6 @@ export default function CareHome() {
 const styles = StyleSheet.create({
   container: { flex: 1 },
   title: { fontSize: 22, fontWeight: '700', paddingHorizontal: 16 },
-  muted: { color: '#666', paddingHorizontal: 16, paddingTop: 8 },
   banner: { marginHorizontal: 16, marginTop: 12, padding: 12, borderRadius: 10, backgroundColor: '#eef6ff', flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   bannerText: { flex: 1, fontSize: 12, color: '#1a4d8f' },
   bannerClear: { fontSize: 12, fontWeight: '600', color: '#1a4d8f', marginLeft: 8 },
