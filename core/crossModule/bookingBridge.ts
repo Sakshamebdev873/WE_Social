@@ -29,7 +29,7 @@ export function buildCareSuggestionHref(suggestion: CareSuggestion): string {
   return `${CARE_SUGGESTION_PATH}?${params.toString()}`;
 }
 
-export interface ParsedCareSuggestion extends CareSuggestion {}
+export type ParsedCareSuggestion = CareSuggestion;
 
 /**
  * Care module calls this against its own `useLocalSearchParams()` output —
