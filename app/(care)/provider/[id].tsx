@@ -1,6 +1,6 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { View, Text, Pressable, StyleSheet, ActivityIndicator } from 'react-native';
-import MapView, { Marker, Circle } from 'react-native-maps';
+import { WebView } from 'react-native-webview';
 import { useLocalSearchParams, router } from 'expo-router';
 import { useCareProvider } from '@modules/care/hooks/useCareProviders';
 import { useAddressReveal, useSetCareBookingStatus } from '@modules/care/hooks/useAddressReveal';
@@ -9,6 +9,32 @@ import { useSession } from '@core/session/SessionProvider';
 import { useOfflineBooking } from '@core/offline/useOfflineBooking';
 import { useOfflineQueue } from '@core/offline/useOfflineQueue';
 import { OfflineDemoPanel } from '@core/ui/OfflineDemoPanel';
+
+// Leaflet + OpenStreetMap in a WebView, not react-native-maps: the Google Maps
+// SDK requires a billing-account-backed API key even in dev, and its Expo Go
+// shared key is currently broken (renders tiles as a gray grid — see
+// https://github.com/react-native-maps/react-native-maps/issues/5888). OSM
+// tiles need no key/account and render fine inside Expo Go via WebView.
+function buildLeafletMapHtml(lat: number, lng: number, showRevealCircle: boolean, radiusMeters: number): string {
+  return `<!DOCTYPE html>
+<html>
+<head>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <style>html, body, #map { height: 100%; margin: 0; padding: 0; }</style>
+</head>
+<body>
+  <div id="map"></div>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script>
+    const map = L.map('map', { zoomControl: false, attributionControl: false }).setView([${lat}, ${lng}], 15);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(map);
+    L.marker([${lat}, ${lng}]).addTo(map);
+    ${showRevealCircle ? `L.circle([${lat}, ${lng}], { radius: ${radiusMeters}, color: 'rgba(17,17,17,0.4)', fillColor: 'rgba(17,17,17,0.08)', fillOpacity: 1, weight: 1 }).addTo(map);` : ''}
+  </script>
+</body>
+</html>`;
+}
 
 export default function CareProviderDetail() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -20,6 +46,10 @@ export default function CareProviderDetail() {
   const [simulateConflict, setSimulateConflict] = useState(false);
 
   const { reveal, latestBooking } = useAddressReveal(provider, jwt?.user.id);
+  const mapHtml = useMemo(
+    () => buildLeafletMapHtml(reveal.pin.lat, reveal.pin.lng, !reveal.isRevealed, 500),
+    [reveal.pin.lat, reveal.pin.lng, reveal.isRevealed]
+  );
   const setStatus = useSetCareBookingStatus();
   const offlineBooking = useOfflineBooking();
   const { data: queue } = useOfflineQueue();
@@ -55,31 +85,8 @@ export default function CareProviderDetail() {
 
   return (
     <View style={styles.container}>
-      <MapView
-        style={styles.map}
-        initialRegion={{
-          latitude: reveal.pin.lat,
-          longitude: reveal.pin.lng,
-          latitudeDelta: 0.02,
-          longitudeDelta: 0.02,
-        }}
-        region={{
-          latitude: reveal.pin.lat,
-          longitude: reveal.pin.lng,
-          latitudeDelta: 0.02,
-          longitudeDelta: 0.02,
-        }}
-      >
-        <Marker coordinate={{ latitude: reveal.pin.lat, longitude: reveal.pin.lng }} />
-        {!reveal.isRevealed && (
-          <Circle
-            center={{ latitude: reveal.pin.lat, longitude: reveal.pin.lng }}
-            radius={500}
-            strokeColor="rgba(17,17,17,0.4)"
-            fillColor="rgba(17,17,17,0.08)"
-          />
-        )}
-      </MapView>
+      <WebView style={styles.map} source={{ html: mapHtml }} originWhitelist={['*']} />
+
 
       <View style={styles.sheet}>
         <Text style={styles.title}>{provider.displayName}</Text>
