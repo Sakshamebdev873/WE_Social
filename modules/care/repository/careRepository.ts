@@ -11,6 +11,13 @@ export interface CareRepository {
     endTime: string;
     contextBookingId?: string;
   }): Promise<CareBooking>;
+  /**
+   * Demo-only transition standing in for what would normally be a host
+   * confirming/declining, or the sync engine settling an offline booking
+   * (see Part 3). Drives the PENDING -> CONFIRMED/CANCELLED edge that the
+   * address-reveal state machine reacts to.
+   */
+  setBookingStatus(bookingId: string, status: CareBooking['status']): Promise<CareBooking>;
 }
 
 const MOCK_PROVIDERS: CareProvider[] = [
@@ -75,6 +82,13 @@ class MockCareRepository implements CareRepository {
       ...input,
     };
     bookings.push(booking);
+    return delay(booking);
+  }
+
+  async setBookingStatus(bookingId: string, status: CareBooking['status']): Promise<CareBooking> {
+    const booking = bookings.find((b) => b.id === bookingId);
+    if (!booking) throw new Error(`Booking ${bookingId} not found`);
+    booking.status = status;
     return delay(booking);
   }
 }
