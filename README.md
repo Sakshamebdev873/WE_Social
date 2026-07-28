@@ -27,6 +27,56 @@ Database schema: [`supabase/schema.sql`](supabase/schema.sql).
 
 ## System Architecture
 
+### High-Level Design
+
+```mermaid
+graph TB
+    Shell["Root Shell<br/>QueryClientProvider + SessionProvider + SyncEngineProvider + ErrorBoundary"]
+
+    Shell --> Auth["(auth) group"]
+    Shell --> Sports["(sports) group"]
+    Shell --> Events["(events) group"]
+    Shell --> Care["(care) group"]
+
+    subgraph SportsModule["Sports module — isolated"]
+        SUI[Screens] --> SHooks[Hooks] --> SRepo[Repository]
+        SHooks --> SStore[(sportsStore)]
+    end
+
+    subgraph EventsModule["Events module — isolated"]
+        EUI[Screens] --> EHooks[Hooks] --> ERepo[Repository]
+        EHooks --> EStore[(eventsStore)]
+    end
+
+    subgraph CareModule["Care module — isolated"]
+        CUI[Screens] --> CHooks[Hooks] --> CRepo[Repository]
+        CHooks --> CStore[(careStore)]
+        CRepo --> Geo[geo/obfuscate.ts + addressReveal.ts]
+    end
+
+    Sports --> SportsModule
+    Events --> EventsModule
+    Care --> CareModule
+
+    SRepo --> Supabase["core/supabase/client"]
+    ERepo --> Supabase
+    CRepo --> Supabase
+    Supabase --> PG[(Supabase Postgres)]
+
+    SUI -. "deep link via bookingBridge.ts" .-> CUI
+
+    OfflineQueue[(expo-sqlite queue)] --> SyncEngine["syncEngine.ts"]
+    SyncEngine --> SRepo
+    SyncEngine --> CRepo
+    NetInfo["NetInfo reconnect event"] --> SyncEngine
+
+    RBAC["RequireRole guard"] -. wraps .-> Sports
+    RBAC -. wraps .-> Events
+    RBAC -. wraps .-> Care
+```
+
+No arrow crosses a module subgraph boundary except through `bookingBridge.ts` (a typed DTO, not a store/repo import) and `syncEngine.ts` (which reaches repositories through their public interface to drain a mixed-module queue — never through internals). That's the isolation guarantee in one picture: three closed boxes, two explicitly-typed seams.
+
 **Module isolation is structural, not just conventional.** Each mini-app is a folder tree that's
 never imported by the other two:
 
@@ -63,11 +113,57 @@ the same shape as `core/offline/syncEngine.ts`, which also legitimately reaches 
 (it has to, to drain a mixed-module queue) — but it does so through each module's public
 repository interface, never through internals.
 
+#### Low-Level Design — cross-module handoff
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant Sports as Sports booking screen
+    participant Bridge as bookingBridge.ts
+    participant Router as expo-router
+    participant Care as Care provider screen
+
+    User->>Sports: confirms 2hr coach booking
+    Sports->>Bridge: buildCareSuggestionHref(CareSuggestion)
+    Bridge-->>Sports: "/(care)?contextModule=sports&contextBookingId=...&startTime=...&endTime=..."
+    Sports->>Router: router.push(href)
+    Router->>Care: mounts with search params
+    Care->>Care: parseCareSuggestionParams(useLocalSearchParams())
+    Care-->>User: booking form pre-filled to the exact Sports session window
+```
+
+`CareSuggestion` (`core/crossModule/bookingBridge.ts`) is the entire contract — Care never imports Sports' store, repository, or types to get here, only this DTO parsed back out of its own route params.
+
 **RBAC**: `core/rbac/RequireRole` wraps a screen/layout with a minimum role (`guest < member <
 host`). A Guest hitting `/(care)/host/new-listing` is `<Redirect>`ed to a forbidden screen before
 that screen's body — or any data hooks it would have called — ever mounts. This is enforced twice
 on that route: once at the module layout level (`guest` minimum, i.e. "must be signed in") and
 again at the screen level (`host` minimum) — composition of the same primitive, not a special case.
+
+#### Low-Level Design — route guard
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant Route as /(care)/host/new-listing
+    participant Guard as RequireRole
+    participant Session as SessionProvider
+    participant Screen
+
+    User->>Route: navigates
+    Route->>Guard: mount RequireRole(role="host")
+    Guard->>Session: read jwt, user.role
+    alt no jwt
+        Guard-->>User: Redirect to /(auth)/login
+    else roleCanAccess(user.role, "host") is false
+        Guard-->>User: Redirect to /(auth)/forbidden
+    else authorized
+        Guard->>Screen: render children
+        Screen-->>User: screen body + its data hooks fire
+    end
+```
+
+The redirect happens before `children` ever mounts — an unauthorized user's browser/JS never executes the screen's body or fires its data hooks, so there's no button to hide and no hook to accidentally leak data through.
 
 ## Security Implementation — Deterministic Geo-Obfuscation
 
@@ -78,6 +174,22 @@ restart, without needing to persist it anywhere.
 **Approach**: hash `providerId` with FNV-1a into a 32-bit seed, feed that seed into `mulberry32` (a
 small, fast, deterministic PRNG), then sample a point **uniform over the area** of a 500m disc and
 convert the polar offset to a lat/lng delta.
+
+#### Low-Level Design — obfuscation algorithm
+
+```mermaid
+flowchart LR
+    A[providerId] --> B["FNV-1a hash"]
+    B --> C[32-bit seed]
+    C --> D["mulberry32(seed)"]
+    D --> E["angle = rng() × 2π"]
+    D --> F["radius = 500 × sqrt(rng())"]
+    E --> G["polar → lat/lng delta"]
+    F --> G
+    G --> H["obfuscated pin<br/>(exactLat + dLat, exactLng + dLng)"]
+```
+
+Same `providerId` in → same seed → same PRNG sequence → same pin, every render and every restart, with no write to storage. `sqrt(rng())` (not `rng()`) is the one step that makes this a *uniform-area* sample rather than a center-biased one — see below.
 
 **Why this specific math, and the one detail that's easy to get wrong**: sampling the radius as
 `R * rng()` biases points toward the center — the area of an annulus at radius `r` grows with `r²`,
@@ -102,6 +214,18 @@ deliberately kept out of React/React Query so it's reasoned about independently 
 `CONFIRMED → exact pin, real address`. The map screen renders whichever pin this function returns;
 it never has its own notion of "revealed."
 
+```mermaid
+stateDiagram-v2
+    [*] --> Hidden
+    Hidden: Obfuscated pin · address = null
+    Hidden: (PENDING, QUEUED, SYNCING, CANCELLED, CONFLICT_REJECTED)
+    Revealed: Exact pin · real address
+    Hidden --> Revealed: booking status → CONFIRMED
+    Revealed --> Hidden: booking status → CANCELLED
+```
+
+Every non-`CONFIRMED` status collapses to the same `Hidden` branch by design — a queued-but-not-yet-synced booking gets exactly the same privacy treatment as a rejected one, so there's no intermediate state that accidentally leaks the real address.
+
 **Where the real boundary has to live**: client-side gating is a UX safeguard, not security — a
 client that wanted to could just read `providers.exact_lat` directly from PostgREST regardless of
 what the UI shows. `supabase/schema.sql` documents (but does not enable, since auth is mocked per
@@ -113,6 +237,17 @@ function that checks for a CONFIRMED booking under `auth.uid()` before returning
 **State machine**: `QUEUED → SYNCING → SUCCESS | CONFLICT_REJECTED` (falls back to `QUEUED` on an
 unrecognized/transient error so the next reconnect retries it, rather than silently dropping the
 booking).
+
+```mermaid
+stateDiagram-v2
+    [*] --> QUEUED: tap Book (offline, or enqueued immediately either way)
+    QUEUED --> SYNCING: drainQueue() on reconnect or app launch
+    SYNCING --> SUCCESS: Supabase insert OK
+    SYNCING --> CONFLICT_REJECTED: 409 — provider/start_time already CONFIRMED
+    SYNCING --> QUEUED: transient/unknown error, retried next reconnect
+    SUCCESS --> [*]
+    CONFLICT_REJECTED --> [*]: optimistic UI rolled back, user notified
+```
 
 - **Persistence**: `core/offline/db.ts` + `queue.ts` use `expo-sqlite`, not an in-memory array —
   a booking made offline must survive the app being killed while still offline, which an in-memory
@@ -155,13 +290,31 @@ schema/docs — see commit history for the real progression rather than one larg
   engine's state transitions are the two pure-function surfaces I'd unit test first — both are
   already written as pure functions specifically so they're testable without mocking React Query
   or SQLite.
-- **Not run on a physical device or simulator.** This was built in a sandboxed environment without
-  an attached iOS/Android device. Every phase was checked with `tsc --noEmit`, `eslint`, and
-  `expo export --platform ios` (full Metro bundle, 1265+ modules, no resolution errors) after each
-  change, plus `expo-doctor` (20/20 checks passing) — but that verifies the app *builds correctly*,
-  not that it *runs* correctly on-device. Before shipping this for real, I'd want a pass on an
-  actual simulator to confirm `react-native-maps` renders and `expo-sqlite`'s JSI calls behave as
-  expected at runtime.
+- **Tested on a physical Android device** (Galaxy A01, Android 16, via Expo Go) during review, which
+  is what surfaced a real bug: `react-native-maps` rendered its base layer but no tiles (a gray
+  grid) specifically inside Expo Go, even though that same device's standalone Google Maps app,
+  network connectivity, and Google Play Services were all confirmed working independently.
+  Root-caused via `adb logcat` (no native error surfaces at default log levels — the SDK fails
+  silently) and cross-referenced against upstream reports —
+  [react-native-maps#5888](https://github.com/react-native-maps/react-native-maps/issues/5888) and
+  [expo/expo#39301](https://github.com/expo/expo/issues/39301) — which confirm Expo Go's
+  bundled/shared Google Maps key is currently failing its own certificate check
+  (`Authorization failure`, `INVALID_ARGUMENT`) on SDK 57, independent of anything in this app's
+  code or config. `tsc --noEmit`, `eslint`, and `expo export --platform ios`/`expo-doctor` stayed
+  clean throughout, as before — this was a runtime-only failure static checks can't catch, which is
+  exactly why the on-device pass mattered.
+- **Swapped `react-native-maps` for `react-native-webview` + Leaflet/OpenStreetMap** on the Care
+  provider screen (the only screen using a map) — a deliberate deviation from the brief's listed
+  stack, made for the reason above. The alternative to swapping was getting a Google Maps API key,
+  which requires a Google Cloud billing account (a card on file, even within the free tier) purely
+  to work around a bug in Expo Go itself, not in this app. Leaflet + OSM tiles need no key, no
+  account, and no native config; `react-native-webview` is already bundled into Expo Go for SDK 57,
+  so it renders correctly with zero setup, inside the exact Expo Go workflow this prototype targets.
+  Trade-off: OSM's tile styling instead of Google's, no satellite/traffic layers — acceptable here
+  since the map's job is showing a pin and the 500m privacy circle, not aesthetics (10% of the
+  grade). Past prototype stage, the natural fix is a development build with a real, restricted
+  Google Maps key (`react-native-maps` config plugin + `androidGoogleMapsApiKey`/
+  `iosGoogleMapsApiKey`), which sidesteps Expo Go's broken shared key entirely.
 - **RLS not enabled.** `schema.sql` documents the intended RLS/RPC shape for the address-reveal
   boundary but doesn't enable it, because the assessment's own FAQ says to mock auth — there's no
   real `auth.uid()` for a policy to key off of yet.
