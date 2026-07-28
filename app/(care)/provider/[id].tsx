@@ -6,32 +6,48 @@ import { useCareProvider } from '@modules/care/hooks/useCareProviders';
 import { useAddressReveal, useSetCareBookingStatus } from '@modules/care/hooks/useAddressReveal';
 import { useCareStore } from '@modules/care/store/careStore';
 import { useSession } from '@core/session/SessionProvider';
-import { careRepository } from '@modules/care/repository/careRepository';
-import type { CareBooking } from '@modules/care/types';
+import { useOfflineBooking } from '@core/offline/useOfflineBooking';
+import { useOfflineQueue } from '@core/offline/useOfflineQueue';
+import { OfflineDemoPanel } from '@core/ui/OfflineDemoPanel';
 
 export default function CareProviderDetail() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const { data: provider, isLoading } = useCareProvider(id);
   const { prefilledWindow } = useCareStore();
   const { jwt } = useSession();
-  const [pendingBooking, setPendingBooking] = useState<CareBooking | null>(null);
+
+  const [activeQueueLocalId, setActiveQueueLocalId] = useState<string | null>(null);
+  const [simulateConflict, setSimulateConflict] = useState(false);
 
   const { reveal, latestBooking } = useAddressReveal(provider, jwt?.user.id);
   const setStatus = useSetCareBookingStatus();
-  const activeBooking = pendingBooking ?? latestBooking;
+  const offlineBooking = useOfflineBooking();
+  const { data: queue } = useOfflineQueue();
+
+  const myQueueItem = queue?.find((q) => q.localId === activeQueueLocalId);
+  const isQueuedOrSyncing = myQueueItem?.status === 'QUEUED' || myQueueItem?.status === 'SYNCING';
+  const isConflictRejected = myQueueItem?.status === 'CONFLICT_REJECTED';
 
   async function handleRequestBooking() {
     if (!jwt || !provider) return;
     const start = prefilledWindow?.startTime ?? new Date().toISOString();
     const end = prefilledWindow?.endTime ?? new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString();
-    const booking = await careRepository.createBooking({
-      providerId: provider.id,
-      userId: jwt.user.id,
-      startTime: start,
-      endTime: end,
-      contextBookingId: prefilledWindow?.contextBookingId,
+
+    const result = await offlineBooking.mutateAsync({
+      draft: {
+        module: 'care',
+        providerId: provider.id,
+        userId: jwt.user.id,
+        startTime: start,
+        endTime: end,
+        contextBookingId: prefilledWindow?.contextBookingId,
+      },
+      simulateConflict,
     });
-    setPendingBooking(booking);
+
+    if (result.status === 'QUEUED' && result.queueItem) {
+      setActiveQueueLocalId(result.queueItem.localId);
+    }
   }
 
   if (isLoading) return <ActivityIndicator style={styles.loader} />;
@@ -78,27 +94,47 @@ export default function CareProviderDetail() {
           </Text>
         </View>
 
-        {!activeBooking && (
+        {!latestBooking && !isQueuedOrSyncing && !isConflictRejected && (
           <Pressable style={styles.primaryButton} onPress={handleRequestBooking}>
             <Text style={styles.primaryButtonText}>Request booking</Text>
           </Pressable>
         )}
 
-        {activeBooking && activeBooking.status !== 'CONFIRMED' && (
+        {isQueuedOrSyncing && (
+          <View style={styles.pendingSyncBox}>
+            <Text style={styles.pendingSyncText}>
+              Booking Pending Sync ({myQueueItem?.status}) — you&apos;re offline, this will push to the
+              server automatically once you reconnect.
+            </Text>
+          </View>
+        )}
+
+        {isConflictRejected && (
+          <View style={styles.conflictBox}>
+            <Text style={styles.conflictText}>
+              Booking rejected: {myQueueItem?.errorMessage}. Your optimistic booking has been rolled back.
+            </Text>
+            <Pressable onPress={() => setActiveQueueLocalId(null)}>
+              <Text style={styles.link}>Try a different time</Text>
+            </Pressable>
+          </View>
+        )}
+
+        {latestBooking && latestBooking.status !== 'CONFIRMED' && !isQueuedOrSyncing && (
           <View style={styles.demoRow}>
             <Text style={styles.demoLabel}>
-              Booking status: {activeBooking.status} — simulate the provider/host response:
+              Booking status: {latestBooking.status} — simulate the provider/host response:
             </Text>
             <View style={styles.demoButtons}>
               <Pressable
                 style={[styles.demoButton, styles.confirmButton]}
-                onPress={() => setStatus.mutate({ bookingId: activeBooking.id, status: 'CONFIRMED' })}
+                onPress={() => setStatus.mutate({ bookingId: latestBooking.id, status: 'CONFIRMED' })}
               >
                 <Text style={styles.demoButtonText}>Confirm</Text>
               </Pressable>
               <Pressable
                 style={[styles.demoButton, styles.cancelButton]}
-                onPress={() => setStatus.mutate({ bookingId: activeBooking.id, status: 'CANCELLED' })}
+                onPress={() => setStatus.mutate({ bookingId: latestBooking.id, status: 'CANCELLED' })}
               >
                 <Text style={styles.demoButtonText}>Cancel</Text>
               </Pressable>
@@ -106,9 +142,11 @@ export default function CareProviderDetail() {
           </View>
         )}
 
-        {activeBooking && activeBooking.status === 'CONFIRMED' && (
+        {latestBooking?.status === 'CONFIRMED' && (
           <Text style={styles.confirmedNote}>Booking confirmed — exact address revealed above.</Text>
         )}
+
+        <OfflineDemoPanel simulateConflict={simulateConflict} onToggleSimulateConflict={setSimulateConflict} />
 
         <Pressable onPress={() => router.back()}>
           <Text style={styles.link}>Back</Text>
@@ -122,7 +160,7 @@ const styles = StyleSheet.create({
   container: { flex: 1 },
   loader: { marginTop: 100 },
   notFound: { marginTop: 100, textAlign: 'center', color: '#666' },
-  map: { height: '45%', width: '100%' },
+  map: { height: '40%', width: '100%' },
   sheet: { flex: 1, padding: 20, gap: 10 },
   title: { fontSize: 22, fontWeight: '700' },
   meta: { color: '#444' },
@@ -132,6 +170,10 @@ const styles = StyleSheet.create({
   addressValue: { fontSize: 14, fontWeight: '600', color: '#222' },
   primaryButton: { padding: 14, borderRadius: 10, backgroundColor: '#111', alignItems: 'center', marginTop: 8 },
   primaryButtonText: { color: '#fff', fontWeight: '600' },
+  pendingSyncBox: { padding: 12, borderRadius: 10, backgroundColor: '#fff7e6' },
+  pendingSyncText: { fontSize: 13, color: '#8a6d1a' },
+  conflictBox: { padding: 12, borderRadius: 10, backgroundColor: '#fdecec', gap: 6 },
+  conflictText: { fontSize: 13, color: '#a3242c' },
   demoRow: { marginTop: 8, gap: 8 },
   demoLabel: { fontSize: 12, color: '#666' },
   demoButtons: { flexDirection: 'row', gap: 8 },
