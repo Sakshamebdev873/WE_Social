@@ -1,10 +1,11 @@
 import React, { useState } from 'react';
-import { View, Text, Pressable, StyleSheet } from 'react-native';
+import { View, Text, Pressable, ScrollView, StyleSheet } from 'react-native';
 import { useLocalSearchParams, router } from 'expo-router';
 import { useSession } from '@core/session/SessionProvider';
 import { buildCareSuggestionHref } from '@core/crossModule/bookingBridge';
 import { useOfflineBooking } from '@core/offline/useOfflineBooking';
 import { useOfflineQueue } from '@core/offline/useOfflineQueue';
+import { useNetworkStore } from '@core/offline/networkStatus';
 import { OfflineDemoPanel } from '@core/ui/OfflineDemoPanel';
 
 const SESSION_LENGTH_HOURS = 2;
@@ -14,7 +15,7 @@ export default function SportsBookingScreen() {
   const { jwt } = useSession();
   const offlineBooking = useOfflineBooking();
   const { data: queue } = useOfflineQueue();
-  const [simulateConflict, setSimulateConflict] = useState(false);
+  const { simulateConflict } = useNetworkStore();
   const [activeQueueLocalId, setActiveQueueLocalId] = useState<string | null>(null);
   const [confirmed, setConfirmed] = useState<{ id: string; startTime: string; endTime: string } | null>(null);
 
@@ -50,7 +51,7 @@ export default function SportsBookingScreen() {
 
   if (isConflictRejected) {
     return (
-      <View style={styles.container}>
+      <ScrollView contentContainerStyle={styles.container}>
         <Text style={styles.title}>Booking rejected</Text>
         <Text style={styles.body}>{myQueueItem?.errorMessage}</Text>
         <Pressable
@@ -62,7 +63,7 @@ export default function SportsBookingScreen() {
         >
           <Text style={styles.primaryButtonText}>Try another coach</Text>
         </Pressable>
-      </View>
+      </ScrollView>
     );
   }
 
@@ -75,7 +76,7 @@ export default function SportsBookingScreen() {
     });
 
     return (
-      <View style={styles.container}>
+      <ScrollView contentContainerStyle={styles.container}>
         <Text style={styles.title}>{isQueuedOrSyncing ? 'Booking Pending Sync' : 'Session booked ✅'}</Text>
         <Text style={styles.body}>
           {new Date(confirmed.startTime).toLocaleTimeString()} –{' '}
@@ -100,12 +101,12 @@ export default function SportsBookingScreen() {
         <Pressable onPress={() => router.replace('/(sports)')}>
           <Text style={styles.link}>Back to Sports</Text>
         </Pressable>
-      </View>
+      </ScrollView>
     );
   }
 
   return (
-    <View style={styles.container}>
+    <ScrollView contentContainerStyle={styles.container}>
       <Text style={styles.title}>Book a {SESSION_LENGTH_HOURS}-hour session</Text>
       <Text style={styles.body}>Coach: {coachId}</Text>
       <Pressable style={styles.primaryButton} onPress={handleBook} disabled={offlineBooking.isPending}>
@@ -114,13 +115,13 @@ export default function SportsBookingScreen() {
         </Text>
       </Pressable>
 
-      <OfflineDemoPanel simulateConflict={simulateConflict} onToggleSimulateConflict={setSimulateConflict} />
-    </View>
+      <OfflineDemoPanel />
+    </ScrollView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, padding: 24, paddingTop: 80, gap: 12 },
+  container: { flexGrow: 1, padding: 24, paddingTop: 80, gap: 12 },
   title: { fontSize: 22, fontWeight: '700' },
   body: { color: '#444' },
   pendingNote: { color: '#8a6d1a', fontSize: 13 },

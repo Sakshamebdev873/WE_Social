@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { View, Text, Pressable, StyleSheet, ActivityIndicator } from 'react-native';
+import { View, Text, Pressable, ScrollView, StyleSheet, ActivityIndicator } from 'react-native';
 import { WebView } from 'react-native-webview';
 import { useLocalSearchParams, router } from 'expo-router';
 import { useCareProvider } from '@modules/care/hooks/useCareProviders';
@@ -8,6 +8,7 @@ import { useCareStore } from '@modules/care/store/careStore';
 import { useSession } from '@core/session/SessionProvider';
 import { useOfflineBooking } from '@core/offline/useOfflineBooking';
 import { useOfflineQueue } from '@core/offline/useOfflineQueue';
+import { useNetworkStore } from '@core/offline/networkStatus';
 import { OfflineDemoPanel } from '@core/ui/OfflineDemoPanel';
 
 // Leaflet + OpenStreetMap in a WebView, not react-native-maps: the Google Maps
@@ -43,7 +44,7 @@ export default function CareProviderDetail() {
   const { jwt } = useSession();
 
   const [activeQueueLocalId, setActiveQueueLocalId] = useState<string | null>(null);
-  const [simulateConflict, setSimulateConflict] = useState(false);
+  const { simulateConflict } = useNetworkStore();
 
   const { reveal, latestBooking } = useAddressReveal(provider, jwt?.user.id);
   const mapHtml = useMemo(
@@ -88,7 +89,7 @@ export default function CareProviderDetail() {
       <WebView style={styles.map} source={{ html: mapHtml }} originWhitelist={['*']} />
 
 
-      <View style={styles.sheet}>
+      <ScrollView style={styles.sheet} contentContainerStyle={styles.sheetContent}>
         <Text style={styles.title}>{provider.displayName}</Text>
         <Text style={styles.meta}>{provider.service} · ${provider.hourlyRate}/hr</Text>
 
@@ -153,12 +154,12 @@ export default function CareProviderDetail() {
           <Text style={styles.confirmedNote}>Booking confirmed — exact address revealed above.</Text>
         )}
 
-        <OfflineDemoPanel simulateConflict={simulateConflict} onToggleSimulateConflict={setSimulateConflict} />
+        <OfflineDemoPanel />
 
         <Pressable onPress={() => router.back()}>
           <Text style={styles.link}>Back</Text>
         </Pressable>
-      </View>
+      </ScrollView>
     </View>
   );
 }
@@ -168,7 +169,8 @@ const styles = StyleSheet.create({
   loader: { marginTop: 100 },
   notFound: { marginTop: 100, textAlign: 'center', color: '#666' },
   map: { height: '40%', width: '100%' },
-  sheet: { flex: 1, padding: 20, gap: 10 },
+  sheet: { flex: 1 },
+  sheetContent: { padding: 20, gap: 10 },
   title: { fontSize: 22, fontWeight: '700' },
   meta: { color: '#444' },
   addressBox: { padding: 12, borderRadius: 10, backgroundColor: '#f2f2f2', gap: 2 },

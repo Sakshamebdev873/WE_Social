@@ -18,14 +18,8 @@ const STATUS_COLOR: Record<QueueItemStatus, string> = {
  * mode or a real backend race — the underlying queue/sync/conflict code
  * paths are the real ones, only the trigger is manual.
  */
-export function OfflineDemoPanel({
-  simulateConflict,
-  onToggleSimulateConflict,
-}: {
-  simulateConflict: boolean;
-  onToggleSimulateConflict: (next: boolean) => void;
-}) {
-  const { isForcedOffline, setForcedOffline } = useNetworkStore();
+export function OfflineDemoPanel() {
+  const { isForcedOffline, setForcedOffline, simulateConflict, setSimulateConflict } = useNetworkStore();
   const { data: queue } = useOfflineQueue();
   const { triggerSync } = useSyncEngine();
 
@@ -40,7 +34,7 @@ export function OfflineDemoPanel({
 
       <View style={styles.row}>
         <Text style={styles.rowLabel}>Force 409 conflict on next sync</Text>
-        <Switch value={simulateConflict} onValueChange={onToggleSimulateConflict} />
+        <Switch value={simulateConflict} onValueChange={setSimulateConflict} />
       </View>
 
       <Pressable style={styles.syncButton} onPress={() => void triggerSync()}>
