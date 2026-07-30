@@ -1,4 +1,6 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { useSession } from '@core/session/SessionProvider';
+import { roleCanAccess } from '@core/rbac/types';
 import { isEffectivelyOnline } from './networkStatus';
 import { enqueueBooking } from './queue';
 import { createRemoteBooking } from './syncEngine';
@@ -23,12 +25,20 @@ interface OfflineBookingInput {
  * screen branches on connectivity itself — this hook decides whether the
  * booking goes straight through or into the offline queue, so the two
  * modules can't drift into different offline behaviors.
+ *
+ * Role is enforced here too (Guest is browse-only, per the login screen's own
+ * copy) so the rule holds even if a screen forgets its own RBAC gate.
  */
 export function useOfflineBooking() {
   const queryClient = useQueryClient();
+  const { jwt } = useSession();
 
   return useMutation({
     mutationFn: async (input: OfflineBookingInput): Promise<OfflineBookingResult> => {
+      if (!jwt || !roleCanAccess(jwt.user.role, 'member')) {
+        throw new Error('Guests can browse but not book — sign in as a Member or Host to book.');
+      }
+
       const online = isEffectivelyOnline() && !input.simulateOffline;
 
       if (!online) {

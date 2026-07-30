@@ -6,10 +6,12 @@ import { useCareProvider } from '@modules/care/hooks/useCareProviders';
 import { useAddressReveal, useSetCareBookingStatus } from '@modules/care/hooks/useAddressReveal';
 import { useCareStore } from '@modules/care/store/careStore';
 import { useSession } from '@core/session/SessionProvider';
+import { roleCanAccess } from '@core/rbac/types';
 import { useOfflineBooking } from '@core/offline/useOfflineBooking';
 import { useOfflineQueue } from '@core/offline/useOfflineQueue';
 import { useNetworkStore } from '@core/offline/networkStatus';
 import { OfflineDemoPanel } from '@core/ui/OfflineDemoPanel';
+import { EmptyState } from '@core/ui/EmptyState';
 
 // Leaflet + OpenStreetMap in a WebView, not react-native-maps: the Google Maps
 // SDK requires a billing-account-backed API key even in dev, and its Expo Go
@@ -59,8 +61,10 @@ export default function CareProviderDetail() {
   const isQueuedOrSyncing = myQueueItem?.status === 'QUEUED' || myQueueItem?.status === 'SYNCING';
   const isConflictRejected = myQueueItem?.status === 'CONFLICT_REJECTED';
 
+  const canBook = !!jwt && roleCanAccess(jwt.user.role, 'member');
+
   async function handleRequestBooking() {
-    if (!jwt || !provider) return;
+    if (!canBook || !provider) return;
     const start = prefilledWindow?.startTime ?? new Date().toISOString();
     const end = prefilledWindow?.endTime ?? new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString();
 
@@ -102,10 +106,17 @@ export default function CareProviderDetail() {
           </Text>
         </View>
 
-        {!latestBooking && !isQueuedOrSyncing && !isConflictRejected && (
+        {!latestBooking && !isQueuedOrSyncing && !isConflictRejected && canBook && (
           <Pressable style={styles.primaryButton} onPress={handleRequestBooking}>
             <Text style={styles.primaryButtonText}>Request booking</Text>
           </Pressable>
+        )}
+
+        {!latestBooking && !isQueuedOrSyncing && !isConflictRejected && !canBook && (
+          <EmptyState
+            title="Guests can't book"
+            body="Sign in as a Member or Host to request a booking."
+          />
         )}
 
         {isQueuedOrSyncing && (

@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { View, Text, Pressable, ScrollView, StyleSheet } from 'react-native';
 import { useLocalSearchParams, router } from 'expo-router';
 import { useSession } from '@core/session/SessionProvider';
+import { RequireRole } from '@core/rbac/RequireRole';
 import { buildCareSuggestionHref } from '@core/crossModule/bookingBridge';
 import { useOfflineBooking } from '@core/offline/useOfflineBooking';
 import { useOfflineQueue } from '@core/offline/useOfflineQueue';
@@ -10,7 +11,19 @@ import { OfflineDemoPanel } from '@core/ui/OfflineDemoPanel';
 
 const SESSION_LENGTH_HOURS = 2;
 
+// Guarded a second time at screen level (on top of the module's guest-level
+// gate in app/(sports)/_layout.tsx) because booking needs "member", a
+// strictly higher bar than the rest of Sports. A Guest hitting this route is
+// redirected to /(auth)/forbidden before the booking form ever renders.
 export default function SportsBookingScreen() {
+  return (
+    <RequireRole role="member">
+      <SportsBookingScreenContent />
+    </RequireRole>
+  );
+}
+
+function SportsBookingScreenContent() {
   const { id: coachId } = useLocalSearchParams<{ id: string }>();
   const { jwt } = useSession();
   const offlineBooking = useOfflineBooking();
